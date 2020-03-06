@@ -1,0 +1,31 @@
+# define MODE_SEGMENT 0
+# define MODE_LEDBAR 1
+# define MODE MODE_LEDBAR
+
+char c;
+unsigned int pwm = 100;
+
+unsigned int out = MODE == MODE_SEGMENT ? 0xFF : 0x3FF;
+
+while ((c = getchar()) != 'e'){
+	
+	if (c == 'd') 
+	{
+		pwm--;
+	}
+	if (c == 'u'){
+		pwm++;
+	}
+
+	if (pwm < 0){ pwm = 0;}
+	if (pwm > 100) {pwm = 100;}	
+	
+	for (int i = 0; i < 100; i++) {
+		if (i <= pwm) {
+			pioa->SODR=out; 
+		} else {
+			pioa->CODR=out;
+		}
+	}
+	
+}

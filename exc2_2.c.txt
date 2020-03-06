@@ -1,0 +1,46 @@
+// main loop
+# define MODE_SEGMENT 0
+# define MODE_LEDBAR 1
+# define MODE MODE_LEDBAR
+
+# define BRIGHTNESS_MOVING 0
+# define BRIGHTNESS_IDLE 100
+
+# define DIRECTION_UP 0
+# define DIRECTION_DOWN 1
+
+char c;
+unsigned int pwm = 100;
+
+unsigned int out = MODE == MODE_SEGMENT ? 0xFF : 0x3FF;
+unsigned int brightness = BRIGHTNESS_IDLE;
+unsigned int direction = DIRECTION_DOWN;
+
+while ((c = getchar()) != 'e'){
+	if (brightness == BRIGHTNESS_MOVING) {
+		if (direction == DIRECTION_DOWN)
+		{
+			pwm--;
+		}
+		if (direction == DIRECTION_UP){
+			pwm++;
+		}
+	}
+
+	if (pwm < 0){ pwm = 0; direction = DIRECTION_UP;}
+	if (pwm > 100) {pwm = 100; direction = DIRECTION_DOWN;}	
+	
+	for (int i = 0; i < 100; i++) {
+		if (i <= pwm) {
+			pioa->SODR=out; 
+		} else {
+			pioa->CODR=out;
+		}
+	}
+	
+}
+
+
+// interrupt
+
+if (brightness == BRIGHTNESS_IDLE) { brightness = BRIGHTNESS_MOVING;}else{brightness = BRIGHTNESS_IDLE;}
