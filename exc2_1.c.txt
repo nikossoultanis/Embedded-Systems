@@ -1,31 +1,144 @@
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <header.h>
+#define PIOA_ID 9 // ΑΝΤΙ ΓΙΑ 2 ΖΗΤΑΕΙ PIOA_9
+#define TC0_ID 17
+#define BUT_IDLE 0
+
 # define MODE_SEGMENT 0
 # define MODE_LEDBAR 1
 # define MODE MODE_LEDBAR
 
+# define BRIGHTNESS_MOVING 0
+# define BRIGHTNESS_IDLE 100
+
+# define DIRECTION_UP 0
+# define DIRECTION_DOWN 1
+
+#define BUT_PRESSED 1
+#define BUT_RELEASED 2
+
+void FIQ_handler(void);
+PIO* pioa = NULL;
+AIC* aic = NULL;
+TC* tc = NULL;
+unsigned int button_state = BUT_IDLE;
+
+int main( int argc, const char* argv[] ){
+unsigned int gen;
+
+STARTUP; // ΑΡΧΙΚΟΠΟΙΗΣΗ ΣΥΣΤΗΜΑΤΟΣ
+tc->Channel_0.RC = 8192; // ΠΕΡΙΟ∆ΟΣ 1 ∆ΕΥΤΕΡΟΛΕΠΤΟ
+tc->Channel_0.CMR = 2084; // SLOW CLOCK , WAVEFORM , DISABLE CLK ON RC COMPARE
+tc->Channel_0.IDR = 0xFF; //ΑΠΕΝΕΡΓΟΠΟΙΗΣΗ ΟΛΩΝ ΤΩΝ ∆ΙΑΚΟΠΩΝ
+tc->Channel_0.IER = 0x10; //ΕΝΕΡΓΟΠΟΙΗΣΗ ΜΟΝΟ ΤΟΥ RC COMPARE
+
+aic->FFER = (1<<PIOA_ID) | (1<<TC0_ID); // ΟΙ ∆ΙΑΚΟΠΕΣ 2 , 17 ΕΙΝΑΙ ΤΥΠΟΥ FIQ
+aic->IECR = (1<<PIOA_ID) | (1<<TC0_ID); //ΕΝΕΡΓΟΠΟΙΗΣΗ ∆ΙΑΚΟΠΩΝ : PIOA & TC0
+
+pioa->PUER = 0x01; //ΕΝΕΡΓΟΠΟΙΗΣΗ ΣΤΗ ΓΡΑΜΜΗ 0 : PULL−UP
+pioa->ODR = 0x01; //ΓΡΑΜΜΗ 0 : ΛΕΙΤΟΥΡΓΙΑ ΕΙΣΟ∆ΟΥ
+pioa->CODR = 0x02; //ΓΡΑΜΜΗ 1 : ∆ΥΝΑΜΙΚΟ ΕΞΟ∆ΟΥ LOW
+pioa->OER = 0x02; //ΓΡΑΜΜΗ 1 : ΛΕΙΤΟΥΡΓΙΑ ΕΞΟ∆ΟΥ
+
+gen = pioa->ISR; // PIOA : ΕΚΚΑΘΑΡΙΣΗ ΑΠΟ ΤΥΧΟΝ ∆ΙΑΚΟΠΕΣ
+
+pioa->PER = 0x03; //ΓΡΑΜΜΕΣ 0 , 1 : ΓΕΝΙΚΟΥ ΣΚΟΠΟΥ
+
+gen = tc->Channel_0.SR; //TC0 : ΕΚΚΑΘΑΡΙΣΗ ΑΠΟ ΤΥΧΟΝ ∆ΙΑΚΟΠΕΣ
+
+aic->ICCR = (1<<PIOA_ID)|(1<<TC0_ID); // AIC : ΕΚΚΑΘΑΡΙΣΗ ΑΠΟ ΤΥΧΟΝ ∆ΙΑΚΟΠΕΣ
+
+pioa->IER = 0x01; //ΕΝΕΡΓΟΠΟΙΗΣΗ ∆ΙΑΚΟΠΩΝ ΣΤΗ ΓΡΑΜΜΗ 0
+
+//LED BAR CONTROL
 char c;
 unsigned int pwm = 100;
 
 unsigned int out = MODE == MODE_SEGMENT ? 0xFF : 0x3FF;
+unsigned int brightness = BRIGHTNESS_IDLE;
+unsigned int direction = DIRECTION_DOWN;
 
 while ((c = getchar()) != 'e'){
-	
-	if (c == 'd') 
-	{
-		pwm--;
-	}
-	if (c == 'u'){
-		pwm++;
-	}
-
-	if (pwm < 0){ pwm = 0;}
-	if (pwm > 100) {pwm = 100;}	
-	
-	for (int i = 0; i < 100; i++) {
-		if (i <= pwm) {
-			pioa->SODR=out; 
-		} else {
-			pioa->CODR=out;
+	if (brightness == BRIGHTNESS_MOVING) {
+		if (direction == DIRECTION_DOWN)
+		{
+			pwm--;
+		}
+		if (direction == DIRECTION_UP){
+			pwm++;
 		}
 	}
+
+	if (pwm < 0){ pwm = 0; direction = DIRECTION_UP;}
+	if (pwm > 100) {pwm = 100; direction = DIRECTION_DOWN;}	
+
+    for (int j = 0; j<20; j+=){ //EXTRA CLOCK
+        for (int i = 0; i < 100; i++) {
+            if (i <= pwm) {
+                pioa->SODR=out; 
+            } else {
+                pioa->CODR=out;
+            }
+        }
+    }
 	
+}
+
+aic->IDCR = (1<<PIOA_ID) | (1<<TC0_ID); // ∆ΙΑΚΟΠΗ ΤΩΝ AIC interrupts
+tc->Channel_0.CCR = 0x02; // ΑΠΕΝΕΡΓΟΠΟΙΗΣΗ ΤΟΥ Timer
+CLEANUP;
+if (brightness == BRIGHTNESS_IDLE) { brightness = BRIGHTNESS_MOVING;}else{brightness = BRIGHTNESS_IDLE;}
+return 0;
+}
+
+void FIQ_handler(void)
+{
+unsigned int data_in = 0;
+unsigned int fiq = 0;
+unsigned int data_out;
+fiq = aic->IPR; //ΕΝΤΟΠΙΣΜΟΣ ΠΕΡΙΦΕΡΕΙΑΚΟΥ ΠΟΥ ΠΡΟΚΑΛΕΣΕ ΤΗ ∆ΙΑΚΟΠΗ
+if( fiq & (1<<PIOA_ID) ){ //ΕΛΕΓΧΟΣ ΓΙΑ PIOA
+
+    data_in = pioa->ISR; // ΕΚΚΑΘΑΡΙΣΗ ΤΗΣ ΠΗΓΗΣ ΤΗΣ ∆ΙΑΚΟΠΗΣ
+    aic->ICCR = (1<<PIOA_ID); // ΕΚΚΑΘΑΡΙΣΗ ΤΗΣ ∆ΙΑΚΟΠΗΣ ΑΠΟ AIC
+    data_in = pioa->PDSR; //ΑΝΑΓΝΩΣΗ ΤΙΜΩΝ ΕΙΣΟ∆ΟΥ
+
+    if( data_in & 0x01 ){ // ∆ΙΑΚΟΠΤΗΣ ΠΑΤΗΜΕΝΟΣ ;
+        if (brightness == BRIGHTNESS_MOVING) {
+            if (direction == DIRECTION_DOWN)
+            {
+                pwm--;
+            }
+            if (direction == DIRECTION_UP){
+                pwm++;
+            }
+        }
+
+        if (pwm < 0){ pwm = 0; direction = DIRECTION_UP;}
+        if (pwm > 100) {pwm = 100; direction = DIRECTION_DOWN;}	
+
+        for (int j = 0; j<20; j+=){ //EXTRA CLOCK
+            for (int i = 0; i < 100; i++) {
+                if (i <= pwm) {
+                    pioa->SODR=out; 
+                } else {
+                    pioa->CODR=out;
+                }
+            }
+        }
+    else{
+        tc->Channel_0.CCR = 0x02; // ∆ΙΑΚΟΠΗ ΜΕΤΡΗΤΗ
+        }
+    }
+}else{ //ΔΙΑΚΟΠΤΗΣ ΟΧΙ ΠΑΤΗΜΕΝΟΣ
+    // if(button_state == BUT_PRESSED)
+    // button_state = BUT_IDLE;
+    // }
 }
